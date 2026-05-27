@@ -31,3 +31,6 @@ rich==13.9.4
 tqdm==4.67.1
 requests==2.32.3
 jieba
+
+# 生产服务器（Gunicorn）
+gunicorn==23.0.0
