@@ -17,6 +17,8 @@ db/*.db
 
 # Token / 密钥
 db/outlook_tokens.json
+macos.token
+*.token
 
 # IDE
 .vscode/
