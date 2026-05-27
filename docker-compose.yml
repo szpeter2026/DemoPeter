@@ -16,10 +16,7 @@ services:
   # 生产部署: docker compose --profile production up -d
   # ============================================
   nginx:
-    build:
-      context: ./docker/nginx
-      dockerfile: Dockerfile
-    image: szpeter2026-nginx:latest
+    image: nginx:alpine
     container_name: szpeter2026-nginx
     restart: unless-stopped
     profiles:
@@ -27,8 +24,9 @@ services:
     ports:
       - "80:80"
       # - "443:443"  # 配置 SSL 证书后取消注释
-    # nginx 配置已 copy 进镜像，无需 volume 挂载
-    # 静态文件通过代理到 web 容器获取
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./static:/app/static:ro
     depends_on:
       - web
     networks:

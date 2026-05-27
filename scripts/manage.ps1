@@ -5,9 +5,9 @@ param(
     [string]$Action = "web"
 )
 
-# Auto-detect project root (script dir then fallbacks)
+# Auto-detect project root (script dir, optional SZPETER_HOME override)
 $ScriptDir = Split-Path -Parent $PSScriptRoot
-$projectPaths = @($ScriptDir, "E:\szpeter2026", "C:\szpeter2026") | Select-Object -Unique
+$projectPaths = @($ScriptDir, $env:SZPETER_HOME) | Where-Object { $_ } | Select-Object -Unique
 
 $ProjectRoot = $null
 foreach ($p in $projectPaths) {
@@ -18,7 +18,10 @@ foreach ($p in $projectPaths) {
 }
 
 if (-not $ProjectRoot) {
-    Write-Host "[ERROR] Project not found! Expected at: $ScriptDir, E:\szpeter2026, or C:\szpeter2026" -ForegroundColor Red
+    Write-Host "[ERROR] Project not found at $ScriptDir" -ForegroundColor Red
+    if (-not $env:SZPETER_HOME) {
+        Write-Host "       Set `$env:SZPETER_HOME to your clone path if the repo lives elsewhere." -ForegroundColor Yellow
+    }
     exit 1
 }
 
@@ -98,8 +101,12 @@ function Invoke-Setup {
     }
 
     if (-not (Test-Path ".env.production")) {
-        Copy-Item .env .env.production
-        Write-Host "[OK] 已创建 .env.production（Docker Compose 需要）" -ForegroundColor Green
+        if (Test-Path ".env.production.example") {
+            Copy-Item .env.production.example .env.production
+            Write-Host "[WARN] 已创建 .env.production 模板，请编辑填入真实配置（勿提交 Git）" -ForegroundColor Yellow
+        } else {
+            Write-Host "[WARN] 未找到 .env.production.example，请手动创建 .env.production" -ForegroundColor Yellow
+        }
     }
 
     Write-Host "`n[OK] 初始化完成！" -ForegroundColor Green
