@@ -106,9 +106,17 @@ def api_document(doc_id):
 def api_import_documents():
     """批量导入文档"""
     data = request.get_json() or {}
-    directory = data.get("directory", str(config.DOCS_DIR))
+    raw_path = data.get("directory") or ""
+    if raw_path:
+        # 相对路径 → 基于项目根目录解析为绝对路径
+        directory = str(Path(raw_path).resolve()
+                        if Path(raw_path).is_absolute()
+                        else (config.PROJECT_ROOT / raw_path).resolve())
+    else:
+        directory = str(config.DOCS_DIR)
     if not Path(directory).exists():
-        return jsonify({"error": f"目录不存在: {directory}"}), 400
+        return jsonify({"error": f"目录不存在: {directory}",
+                        "details": [], "total": 0, "success": 0, "failed": 0}), 400
 
     # 扫描文件
     files = processor.scan_directory(directory)

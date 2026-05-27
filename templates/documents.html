@@ -90,20 +90,30 @@ function importDocuments() {
     progressDiv.querySelector('.progress-text').textContent = '正在导入...';
     resultDiv.innerHTML = '';
 
+    const body = path ? JSON.stringify({directory: path}) : '{}';
     fetch('/api/documents/import', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({directory: path || undefined})
+        body: body
     })
-    .then(r => r.json())
+    .then(r => {
+        if (!r.ok) {
+            return r.json().then(errData => {
+                throw new Error(errData.error || `HTTP ${r.status}`);
+            });
+        }
+        return r.json();
+    })
     .then(data => {
         progressDiv.style.display = 'none';
-        const failed = data.details.filter(d => d.status === 'failed');
+        const details = data.details || [];
+        const failed = details.filter(d => d.status === 'failed');
+        const skipped = details.filter(d => d.status === 'skipped').length;
         resultDiv.innerHTML = `
             <div class="import-summary">
-                <span class="badge badge-green">✅ 成功 ${data.success}</span>
-                <span class="badge badge-yellow">⏭ 跳过 ${data.details.filter(d=>d.status==='skipped').length}</span>
-                <span class="badge badge-red">❌ 失败 ${data.failed}</span>
+                <span class="badge badge-green">✅ 成功 ${data.success || 0}</span>
+                <span class="badge badge-yellow">⏭ 跳过 ${skipped}</span>
+                <span class="badge badge-red">❌ 失败 ${data.failed || 0}</span>
             </div>
             ${failed.length ? '<div class="import-errors"><h4>失败详情：</h4>' + failed.map(f => `<p>📛 ${escapeHtml(f.title)}: ${escapeHtml(f.reason)}</p>`).join('') + '</div>' : ''}
         `;
@@ -111,7 +121,7 @@ function importDocuments() {
     })
     .catch(err => {
         progressDiv.style.display = 'none';
-        resultDiv.innerHTML = `<div class="error">❌ 导入失败: ${err.message}</div>`;
+        resultDiv.innerHTML = `<div class="error">❌ ${escapeHtml(err.message)}</div>`;
     });
 }
 
