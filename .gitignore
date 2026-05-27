@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# 数据库
+*.db
+db/*.db
+
+# 环境变量
+.env
+
+# Token / 密钥
+db/outlook_tokens.json
+
+# IDE
+.vscode/
+.idea/
+
+# 报告
+reports/*.pdf
+reports/*.json
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,32 @@
+# szpeter2026 知识库 - Python 依赖
+# 核心
+flask==3.1.0
+flask-cors==5.0.1
+python-dotenv==1.1.0
+sqlalchemy==2.0.36
+
+# 文档处理
+pypdf==5.3.1
+pdfplumber==0.11.5
+markdown==3.7
+beautifulsoup4==4.12.3
+
+# 向量数据库
+chromadb==0.6.3
+
+# pgvector + PostgreSQL（可选）
+psycopg2-binary==2.9.10
+pgvector==0.3.6
+
+# AI 客户端
+openai==1.71.0
+httpx==0.28.1
+
+# 报告与可视化
+jinja2==3.1.5
+matplotlib==3.10.0
+
+# 工具
+rich==13.9.4
+tqdm==4.67.1
+requests==2.32.3

@@ -1,0 +1,33 @@
+# szpeter2026 Docker 忽略文件
+# 避免将数据文件、虚拟环境等打包进镜像
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 数据库（本地数据，不进镜像）
+db/*.db
+db/chroma_docker/
+db/pgdata/
+db/chroma_data/
+
+# 环境配置（含密钥）
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# 报告
+reports/
+
+# 知识库缓存
+knowledge_base/chunks/
+
+# Git
+.git/
+.gitignore
+*.md
