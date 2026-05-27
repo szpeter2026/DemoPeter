@@ -12,6 +12,17 @@ from config.settings import config
 CHROMA_PERSIST_DIR = str(config.DB_DIR / "chroma_data")
 
 
+def squared_l2_to_cosine_similarity(squared_l2: float) -> float:
+    """将 Chroma 返回的 squared L2 距离转为余弦相似度 [0, 1]。
+
+    前提：embedding 向量已 L2 归一化（DefaultEmbeddingFunction / all-MiniLM-L6-v2 满足）。
+    对归一化向量有 ||a-b||² = 2(1 - cos(a,b))，故 cos_sim = 1 - squared_l2/2。
+    若换用未归一化的 embedding 模型，需改用对应距离→相似度公式。
+    """
+    similarity = 1.0 - squared_l2 / 2.0
+    return max(0.0, min(1.0, similarity))
+
+
 class VectorStore:
     """Chroma 向量数据库管理器
     
@@ -153,10 +164,7 @@ class VectorStore:
         if results["ids"] and results["ids"][0]:
             for i in range(len(results["ids"][0])):
                 distance = results.get("distances", [[0]] * top_k)[0][i]
-                # Chroma 默认用 squared L2 距离（对归一化向量: 0=相同, 4=相反）
-                # 转换公式: cosine_similarity = 1 - L2/2
-                similarity = 1.0 - distance / 2.0
-                similarity = max(0.0, min(1.0, similarity))
+                similarity = squared_l2_to_cosine_similarity(distance)
                 if similarity >= threshold:
                     hits.append({
                         "id": results["ids"][0][i],
