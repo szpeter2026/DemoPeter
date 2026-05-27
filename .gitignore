@@ -31,3 +31,14 @@ reports/*.json
 # OS
 .DS_Store
 Thumbs.db
+
+# IDE
+.vs/
+
+# 向量数据库 (本地 Chroma)
+db/chroma_data/
+data/
+
+# Docker 构建产物
+docker-images/
+docker/

@@ -5,11 +5,38 @@ param(
     [string]$Action = "web"
 )
 
-$ProjectRoot = "E:\szpeter2026"
+# Auto-detect project root (script dir then fallbacks)
+$ScriptDir = Split-Path -Parent $PSScriptRoot
+$projectPaths = @($ScriptDir, "E:\szpeter2026", "C:\szpeter2026") | Select-Object -Unique
+
+$ProjectRoot = $null
+foreach ($p in $projectPaths) {
+    if ($p -and (Test-Path $p) -and (Test-Path "$p\requirements.txt")) {
+        $ProjectRoot = $p
+        break
+    }
+}
+
+if (-not $ProjectRoot) {
+    Write-Host "[ERROR] Project not found! Expected at: $ScriptDir, E:\szpeter2026, or C:\szpeter2026" -ForegroundColor Red
+    exit 1
+}
+
+# ===== Venv Activation =====
+function Activate-Venv {
+    $venvPath = Join-Path $ProjectRoot ".venv\Scripts\Activate.ps1"
+    if (Test-Path $venvPath) {
+        . $venvPath
+        Write-Host "[OK] venv activated" -ForegroundColor Green
+    } else {
+        Write-Host "[WARN] .venv not found, using system python" -ForegroundColor Yellow
+    }
+}
 
 function Start-WebDashboard {
     Write-Host "`n 启动 szpeter2026 Web 管理面板..." -ForegroundColor Cyan
     Set-Location $ProjectRoot
+    Activate-Venv
     python src\web_dashboard.py
 }
 
@@ -17,6 +44,7 @@ function Start-Import {
     param([string]$Path = "$ProjectRoot\knowledge_base\documents")
     Write-Host "`n 导入文档: $Path" -ForegroundColor Cyan
     Set-Location $ProjectRoot
+    Activate-Venv
     python scripts\import_docs.py --path "$Path"
 }
 
@@ -26,6 +54,7 @@ function Start-Query {
         $Query = Read-Host "请输入查询内容"
     }
     Set-Location $ProjectRoot
+    Activate-Venv
     python scripts\query.py "$Query"
 }
 
@@ -33,18 +62,21 @@ function Invoke-Report {
     param([string]$Type = "daily")
     Write-Host "`n 生成 $Type 报告..." -ForegroundColor Cyan
     Set-Location $ProjectRoot
+    Activate-Venv
     python scripts\gen_report.py $Type
 }
 
 function Invoke-Tests {
     Write-Host "`n 运行端到端测试..." -ForegroundColor Cyan
     Set-Location $ProjectRoot
+    Activate-Venv
     python tests\test_e2e.py
 }
 
 function Invoke-Setup {
     Write-Host "`n 环境初始化..." -ForegroundColor Cyan
     Set-Location $ProjectRoot
+    Activate-Venv
 
     python --version 2>$null
     if ($LASTEXITCODE -ne 0) {
@@ -57,8 +89,17 @@ function Invoke-Setup {
     pip install -r requirements.txt -q
 
     if (-not (Test-Path ".env")) {
-        Copy-Item .env.example .env
-        Write-Host "[WARN] 已创建 .env 文件，请编辑填入 API Key" -ForegroundColor Yellow
+        if (Test-Path ".env.example") {
+            Copy-Item .env.example .env
+            Write-Host "[WARN] 已创建 .env 文件，请编辑填入 API Key" -ForegroundColor Yellow
+        } else {
+            Write-Host "[WARN] 未找到 .env.example，请手动创建 .env 文件" -ForegroundColor Yellow
+        }
+    }
+
+    if (-not (Test-Path ".env.production")) {
+        Copy-Item .env .env.production
+        Write-Host "[OK] 已创建 .env.production（Docker Compose 需要）" -ForegroundColor Green
     }
 
     Write-Host "`n[OK] 初始化完成！" -ForegroundColor Green
@@ -67,6 +108,7 @@ function Invoke-Setup {
 function Show-Stats {
     Write-Host "`n 知识库统计:" -ForegroundColor Cyan
     Set-Location $ProjectRoot
+    Activate-Venv
     python -c @"
 from src.db_manager import DBManager
 from src.vector_store import VectorStore
@@ -89,6 +131,7 @@ print(f'  vectors:   {vec.get(\"total_vectors\", \"N/A\")}')
 function Invoke-DockerUp {
     Write-Host "Starting Docker containers..." -ForegroundColor Cyan
     Set-Location $ProjectRoot
+    # nginx 已移入 production profile，默认不启动
     docker compose up -d
     Write-Host "`nWaiting for services..." -ForegroundColor Yellow
     Start-Sleep -Seconds 3
@@ -121,8 +164,13 @@ function Show-DockerStatus {
 
     Write-Host "`n Health check:" -ForegroundColor Cyan
     try {
-        $chromaHealth = Invoke-RestMethod -Uri "http://localhost:8000/api/v2/heartbeat" -TimeoutSec 3 -ErrorAction Stop
-        Write-Host "  [OK] Chroma: alive" -ForegroundColor Green
+        # Chroma port is not mapped to host; check via docker exec
+        $null = docker exec szpeter2026-chroma curl -s http://localhost:8000/api/v2/heartbeat 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "  [OK] Chroma: alive" -ForegroundColor Green
+        } else {
+            Write-Host "  [FAIL] Chroma: unreachable" -ForegroundColor Red
+        }
     } catch {
         Write-Host "  [FAIL] Chroma: unreachable" -ForegroundColor Red
     }

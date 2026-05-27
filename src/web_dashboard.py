@@ -109,6 +109,23 @@ def api_document(doc_id):
     return jsonify(doc)
 
 
+@app.route("/api/health/vector")
+def api_vector_health():
+    """向量存储健康检查 API"""
+    health = vector_store.health_check()
+    pg_available = pgvector_store.is_available
+    return jsonify({
+        "chroma": health,
+        "pgvector": {"available": pg_available},
+        "search_mode": config.SEARCH_MODE,
+        "fallback_chain": [
+            "Chroma 向量检索",
+            "pgvector 向量检索 (备选)",
+            "SQLite FTS5 关键词检索 (兜底)",
+        ],
+    })
+
+
 @app.route("/api/documents/import", methods=["POST"])
 def api_import_documents():
     """批量导入文档"""
@@ -157,14 +174,25 @@ def api_import_documents():
             db.save_chunks(doc_id, chunks)
 
             # 添加到向量库
+            vector_write_ok = True
             if vector_store.is_available:
-                vector_store.add_documents(str(doc_id), chunks)
+                added = vector_store.add_documents(str(doc_id), chunks)
+                # 写入后验证：用第一条 chunk 内容做检索验证
+                if added > 0 and chunks:
+                    verify_query = chunks[0]["content"][:100]
+                    verify_hits = vector_store.search(verify_query, top_k=1, threshold=0.0)
+                    if verify_hits:
+                        print(f"[Import] ✓ 向量写入验证通过: doc_id={doc_id}")
+                    else:
+                        vector_write_ok = False
+                        print(f"[Import] ⚠️ 向量写入验证失败: doc_id={doc_id} 无法通过检索找回")
 
             if pgvector_store.is_available:
                 pgvector_store.add_documents(doc_id, chunks)
 
-            # 更新状态
-            db.update_document_status(doc_id, "completed", len(chunks))
+            # 更新状态（标注向量写入状态）
+            status = "completed" if vector_write_ok else "completed_no_vector"
+            db.update_document_status(doc_id, status, len(chunks))
             results["success"] += 1
             results["details"].append({
                 "title": file_info["title"],
@@ -362,12 +390,21 @@ def api_gitea_webhook():
 def main():
     vec_stats = vector_store.get_collection_stats()
     pg_stats = pgvector_store.get_stats() if pgvector_store.is_available else {"available": False}
+    vec_health = vector_store.health_check()
 
     chroma_status = "不可用"
     if vec_stats.get("available"):
         mode = vec_stats.get("mode", "?")
         count = vec_stats.get("total_vectors", 0)
-        chroma_status = f"{mode}模式 ({count} 向量)"
+        emb_status = ""
+        emb_ok = vec_health.get("embedding_ok")
+        if emb_ok is False:
+            emb_status = " [Embedding异常!]"
+        elif emb_ok is None:
+            emb_status = ""
+        else:
+            emb_status = " [Embedding正常]"
+        chroma_status = f"{mode}模式 ({count} 向量){emb_status}"
 
     pg_status = "不可用"
     if pg_stats.get("available"):
@@ -378,6 +415,11 @@ def main():
     ai_ok, ai_hint = AIClient.is_configured()
     ai_status = config.AI_PROVIDER if ai_ok else "未就绪(仅检索模式)"
 
+    # Embedding 健康警告
+    if vec_health.get("embedding_ok") is False:
+        print("[VectorStore] ⚠️  Embedding 函数异常，请运行 scripts/verify_persistence.py 排查")
+        print("[VectorStore]    常见原因: 缺少 onnxruntime → pip install onnxruntime>=1.18.0")
+
     print(f"""
 ╔══════════════════════════════════════════════╗
 ║       szpeter2026 知识库管理面板            ║
@@ -387,6 +429,7 @@ def main():
 ║  Ollama:    {config.OLLAMA_BASE_URL:<31}║
 ║  Webhook:   /api/webhook/gitea                ║
 ║  Notion:    {'已配置' if config.NOTION_TOKEN else '未配置':<31}║
+║  Health:    http://{config.WEB_HOST}:{config.WEB_PORT}/api/health/vector║
 ║  访问地址:  http://{config.WEB_HOST}:{config.WEB_PORT:<21}║
 ╚══════════════════════════════════════════════╝
     """)

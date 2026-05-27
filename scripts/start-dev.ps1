@@ -110,7 +110,7 @@ if ($dockerExe) {
 
     # Start containers
     if ($dockerAvailable) {
-        Write-Host "       starting chroma + pgvector..." -ForegroundColor Yellow
+        Write-Host "       starting containers..." -ForegroundColor Yellow
         docker compose up -d 2>&1 | Out-Null
         if ($LASTEXITCODE -eq 0) {
             Write-Host "       containers started" -ForegroundColor Green

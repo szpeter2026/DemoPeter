@@ -2,7 +2,7 @@
 # 核心
 flask==3.1.0
 flask-cors==5.0.1
-python-dotenv==1.1.0
+python-dotenv>=1.2.0
 sqlalchemy==2.0.36
 
 # 文档处理
@@ -14,6 +14,7 @@ beautifulsoup4==4.12.3
 
 # 向量数据库（Windows Python 3.13 需 MSVC 运行时，不可用时自动回退 SQLite FTS5）
 chromadb
+onnxruntime>=1.18.0      # Chroma DefaultEmbeddingFunction 依赖，持久化模式必需
 
 # pgvector + PostgreSQL（可选）
 psycopg2-binary==2.9.10
