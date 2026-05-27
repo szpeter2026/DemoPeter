@@ -22,6 +22,7 @@ from src.doc_processor import DocumentProcessor
 from src.vector_store import VectorStore
 from src.pgvector_store import PgvectorStore
 from src.rag_engine import RAGEngine
+from src.ai_client import AIClient
 from src.report_gen import ReportGenerator
 from src.gitea_webhook import GiteaWebhookHandler
 from src.outlook_client import OutlookClient
@@ -60,7 +61,13 @@ def documents_page():
 @app.route("/query")
 def query_page():
     """RAG 问答页面"""
-    return render_template("query.html", ai_provider=config.AI_PROVIDER)
+    ai_ok, ai_hint = AIClient.is_configured()
+    return render_template(
+        "query.html",
+        ai_provider=config.AI_PROVIDER,
+        ai_configured=ai_ok,
+        ai_hint=ai_hint,
+    )
 
 
 @app.route("/reports")
@@ -201,13 +208,23 @@ def api_rag_query():
     top_k = data.get("top_k", 5)
     threshold = data.get("threshold", 0.5)
 
-    result = rag.query(query_text, top_k=top_k, threshold=threshold)
+    try:
+        result = rag.query(query_text, top_k=top_k, threshold=threshold)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": f"问答失败: {exc}"}), 500
+
+    ai_ok, _ = AIClient.is_configured()
     return jsonify({
         "query": result.query,
         "answer": result.answer,
         "sources": result.sources,
         "response_time_ms": result.response_time_ms,
         "chunk_count": result.chunk_count,
+        "retrieval_mode": result.retrieval_mode,
+        "ai_configured": ai_ok,
+        "retrieval_only": "+retrieval_only" in (result.retrieval_mode or ""),
     })
 
 
@@ -218,17 +235,35 @@ def api_rag_stream():
     if not query_text:
         return jsonify({"error": "请输入问题"}), 400
 
+    top_k = request.args.get("top_k", 5, type=int)
+    threshold = request.args.get("threshold", 0.5, type=float)
+
     def generate():
-        stream_gen, hits = rag.query_stream(query_text)
-        # 先发送来源
-        yield f"data: {json.dumps({'type': 'sources', 'data': [{'content': h['content'][:300], 'source': h['metadata'].get('source_file', '')} for h in hits]}, ensure_ascii=False)}\n\n"
-        # 流式发送回答
-        for chunk in stream_gen:
-            if isinstance(chunk, float):
-                # 最后一个是耗时
-                yield f"data: {json.dumps({'type': 'done', 'time_ms': chunk * 1000}, ensure_ascii=False)}\n\n"
-            else:
-                yield f"data: {json.dumps({'type': 'text', 'content': chunk}, ensure_ascii=False)}\n\n"
+        try:
+            ai_ok, _ = AIClient.is_configured()
+            stream_gen, hits = rag.query_stream(
+                query_text, top_k=top_k, threshold=threshold,
+            )
+            retrieval_only = not ai_ok
+            if hits and not retrieval_only:
+                sources_payload = [{
+                    "content": h["content"][:1200],
+                    "source": h["metadata"].get("source_file", ""),
+                    "similarity": h.get("similarity", 0),
+                    "below_threshold": h.get("_below_threshold", False),
+                } for h in hits]
+                yield f"data: {json.dumps({'type': 'sources', 'data': sources_payload, 'retrieval_only': False}, ensure_ascii=False)}\n\n"
+            elif hits and retrieval_only:
+                yield f"data: {json.dumps({'type': 'meta', 'retrieval_only': True, 'chunk_count': len(hits)}, ensure_ascii=False)}\n\n"
+            for chunk in stream_gen:
+                if isinstance(chunk, float):
+                    yield f"data: {json.dumps({'type': 'done', 'time_ms': chunk * 1000}, ensure_ascii=False)}\n\n"
+                else:
+                    yield f"data: {json.dumps({'type': 'text', 'content': chunk}, ensure_ascii=False)}\n\n"
+        except ValueError as exc:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)}, ensure_ascii=False)}\n\n"
+        except Exception as exc:
+            yield f"data: {json.dumps({'type': 'error', 'message': f'问答失败: {exc}'}, ensure_ascii=False)}\n\n"
 
     return Response(stream_with_context(generate()), mimetype="text/event-stream")
 
@@ -266,9 +301,12 @@ def api_system_check():
     """系统健康检查"""
     vec_stats = vector_store.get_collection_stats()
     pg_stats = pgvector_store.get_stats() if pgvector_store.is_available else {"available": False}
+    ai_ok, ai_hint = AIClient.is_configured()
     return jsonify({
         "status": "ok",
         "ai_provider": config.AI_PROVIDER,
+        "ai_configured": ai_ok,
+        "ai_hint": ai_hint if not ai_ok else "",
         "chroma": {
             "available": vec_stats.get("available"),
             "mode": vec_stats.get("mode"),
@@ -337,10 +375,13 @@ def main():
         m = pg_stats.get("embedding_model", "")
         pg_status = f"pgvector ({v} 向量, {m})"
 
+    ai_ok, ai_hint = AIClient.is_configured()
+    ai_status = config.AI_PROVIDER if ai_ok else "未就绪(仅检索模式)"
+
     print(f"""
 ╔══════════════════════════════════════════════╗
 ║       szpeter2026 知识库管理面板            ║
-║  AI 提供商: {config.AI_PROVIDER:<31}║
+║  AI 提供商: {ai_status:<31}║
 ║  Chroma:    {chroma_status:<31}║
 ║  pgvector:  {pg_status:<31}║
 ║  Ollama:    {config.OLLAMA_BASE_URL:<31}║

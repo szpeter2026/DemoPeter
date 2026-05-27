@@ -13,15 +13,38 @@ from config.settings import config
 class AIClient:
     """AI 模型统一客户端 — 支持 DeepSeek API 和 Ollama 本地模型"""
 
-    def __init__(self, provider: str | None = None):
+    def __init__(self, provider: str | None = None, *, validate: bool = True):
         self.provider = provider or config.AI_PROVIDER
-        self._validate()
+        if validate:
+            self._validate()
+
+    @classmethod
+    def is_configured(cls, provider: str | None = None) -> tuple[bool, str]:
+        """检查 AI 是否可用，返回 (是否可用, 提示信息)。"""
+        provider = provider or config.AI_PROVIDER
+        if provider == "deepseek":
+            if not config.DEEPSEEK_API_KEY:
+                return False, (
+                    "DEEPSEEK_API_KEY 未配置。请执行 cp .env.example .env "
+                    "并填入密钥，或在 .env 中设置 AI_PROVIDER=ollama 使用本地模型。"
+                )
+        elif provider == "ollama":
+            try:
+                with httpx.Client(timeout=3) as client:
+                    client.get(f"{config.OLLAMA_BASE_URL}/api/tags")
+            except Exception:
+                return False, (
+                    f"Ollama 未运行（{config.OLLAMA_BASE_URL}）。"
+                    "请先启动 Ollama，或配置 DEEPSEEK_API_KEY。"
+                )
+        else:
+            return False, f"不支持的 AI 提供商: {provider}"
+        return True, ""
 
     def _validate(self):
-        if self.provider == "deepseek" and not config.DEEPSEEK_API_KEY:
-            raise ValueError("DEEPSEEK_API_KEY 未配置，请设置环境变量或 .env 文件")
-        if self.provider not in ("deepseek", "ollama"):
-            raise ValueError(f"不支持的 AI 提供商: {self.provider}")
+        ok, msg = self.is_configured(self.provider)
+        if not ok:
+            raise ValueError(msg)
 
     def chat(self, messages: list[dict], temperature: float = 0.7,
              max_tokens: int = 2000) -> tuple[str, float]:

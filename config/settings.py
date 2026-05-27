@@ -65,6 +65,28 @@ class Config:
     CHUNK_SIZE: int = int(os.getenv("CHUNK_SIZE", "1000"))
     CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", "200"))
 
+    # ===== 检索模式 =====
+    # hybrid: 向量 + FTS5 RRF 融合 | vector: 仅向量（降级链） | keyword: 仅关键词
+    SEARCH_MODE: str = os.getenv("SEARCH_MODE", "hybrid")
+    HYBRID_RRF_K: int = int(os.getenv("HYBRID_RRF_K", "60"))
+    VECTOR_WEIGHT: float = float(os.getenv("VECTOR_WEIGHT", "0.7"))
+    KEYWORD_WEIGHT: float = float(os.getenv("KEYWORD_WEIGHT", "0.3"))
+
+    # ===== 融合测试语料（Projects 目录） =====
+    CORPUS_CONFIG: Path = PROJECT_ROOT / "config" / "corpora.json"
+    PROJECTS_ROOT: Path = Path(os.getenv("PROJECTS_ROOT", "/Users/jason/Projects"))
+    CAREERINTL_DIR: Path = PROJECTS_ROOT / "300662科锐国际"
+    PYTHON_BOOK_DIR: Path = PROJECTS_ROOT / "数据分析与python实战-代码"
+
+    # 兼容旧配置：单目录语料（ImartOS 大规模语料）
+    DEFAULT_CORPUS_DIR: Path = Path(
+        os.getenv(
+            "DEFAULT_CORPUS_DIR",
+            str(PROJECTS_ROOT / "300662科锐国际"),
+        )
+    )
+    USE_FUSED_CORPUS: bool = os.getenv("USE_FUSED_CORPUS", "true").lower() == "true"
+
     # ===== Notion 集成 =====
     NOTION_TOKEN: str = os.getenv("NOTION_TOKEN", "")
     NOTION_DATABASE_ID: str = os.getenv("NOTION_DATABASE_ID", "")

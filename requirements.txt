@@ -8,6 +8,7 @@ sqlalchemy==2.0.36
 # 文档处理
 pypdf==5.3.1
 pdfplumber==0.11.5
+python-docx==1.1.2
 markdown==3.7
 beautifulsoup4==4.12.3
 
@@ -31,6 +32,9 @@ rich==13.9.4
 tqdm==4.67.1
 requests==2.32.3
 jieba
+
+# MCP Server（Agent 接入）
+mcp>=1.2.0
 
 # 生产服务器（Gunicorn）
 gunicorn==23.0.0

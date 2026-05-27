@@ -203,6 +203,10 @@ class DBManager:
                 for r in rows:
                     if r["id"] not in seen_ids:
                         seen_ids.add(r["id"])
+                        match_score = sum(
+                            1 for t in tokens if t in r["content"]
+                        ) / len(tokens)
+                        fts_sim = round(min(0.95, 0.45 + match_score * 0.5), 3)
                         results.append({
                             "id": f"chunk_{r['id']}",
                             "content": r["content"],
@@ -211,7 +215,7 @@ class DBManager:
                                 "doc_id": r["document_id"],
                                 "chunk_index": r["chunk_index"],
                             },
-                            "similarity": 0.6,
+                            "similarity": fts_sim,
                         })
             except Exception:
                 pass

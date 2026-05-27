@@ -7,6 +7,15 @@
     <p class="subtitle">基于知识库的检索增强生成 | AI: {{ ai_provider }}</p>
 </div>
 
+{% if not ai_configured %}
+<div class="card" style="margin-bottom:1rem;border-left:4px solid #f0ad4e;background:#fff8e6;">
+    <div class="card-body">
+        <strong>⚠️ 检索模式</strong> — AI 生成未启用。当前仅展示知识库检索结果。
+        <div style="margin-top:0.5rem;font-size:0.9rem;color:#666;">{{ ai_hint }}</div>
+    </div>
+</div>
+{% endif %}
+
 <div class="card chat-container">
     <div class="card-body">
         <div class="chat-messages" id="chat-messages">
@@ -26,7 +35,9 @@
         </div>
         <div class="chat-options">
             <label>Top-K: <input type="number" id="top-k" value="5" min="1" max="20" style="width:70px"></label>
-            <label>相似度阈值: <input type="number" id="threshold" value="0.5" min="0" max="1" step="0.1" style="width:70px"></label>
+            <label title="混合检索下为向量/关键词匹配度，非 RRF 内部小分">相似度阈值:
+                <input type="number" id="threshold" value="0.35" min="0" max="1" step="0.05" style="width:70px">
+            </label>
             <label><input type="checkbox" id="stream-mode" checked> 流式输出</label>
         </div>
     </div>
@@ -83,21 +94,39 @@ function sendQuery() {
     }
 }
 
+function formatSources(sources) {
+    if (!sources || !sources.length) return '';
+    return '<div class="msg-sources"><strong>参考来源：</strong>' +
+        sources.map(s => {
+            const pct = (s.similarity * 100).toFixed(0);
+            const warn = s.below_threshold ? ' ⚠️' : '';
+            return `<span class="source-tag">${escapeHtml(s.source)} (${pct}%)${warn}</span>`;
+        }).join('') +
+        '</div>';
+}
+
+function formatAnswer(text) {
+    return escapeHtml(text).replace(/\n/g, '<br>');
+}
+
 function normalQuery(query, aiMsg, topK, threshold) {
     fetch('/api/rag/query', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({query, top_k: parseInt(topK), threshold: parseFloat(threshold)})
     })
-    .then(r => r.json())
-    .then(data => {
+    .then(r => r.json().then(data => ({ok: r.ok, data})))
+    .then(({ok, data}) => {
         const contentDiv = aiMsg.querySelector('.msg-content');
-        let html = escapeHtml(data.answer).replace(/\n/g, '<br>');
+        if (!ok) {
+            contentDiv.innerHTML = `❌ ${escapeHtml(data.error || '请求失败')}`;
+            isProcessing = false;
+            return;
+        }
+        let html = formatAnswer(data.answer);
         html += `<div class="msg-meta">⏱ ${data.response_time_ms.toFixed(0)}ms | 📚 ${data.chunk_count} 块参考</div>`;
-        if (data.sources.length) {
-            html += '<div class="msg-sources"><strong>参考来源：</strong>' +
-                data.sources.map(s => `<span class="source-tag">${escapeHtml(s.source)} (${(s.similarity*100).toFixed(0)}%)</span>`).join('') +
-                '</div>';
+        if (data.sources.length && !data.retrieval_only) {
+            html += formatSources(data.sources);
         }
         contentDiv.innerHTML = html;
         isProcessing = false;
@@ -112,21 +141,32 @@ function normalQuery(query, aiMsg, topK, threshold) {
 function streamQuery(query, aiMsg, topK, threshold) {
     const params = new URLSearchParams({query, top_k: topK, threshold});
     const eventSource = new EventSource('/api/rag/stream?' + params.toString());
-    let textContent = '';
-    let hasSources = false;
+    let answerText = '';
+    let sourcesHtml = '';
+    let hasContent = false;
+
+    function renderContent() {
+        aiMsg.querySelector('.msg-content').innerHTML =
+            sourcesHtml + formatAnswer(answerText);
+    }
 
     eventSource.onmessage = function(event) {
         const data = JSON.parse(event.data);
         if (data.type === 'sources') {
-            hasSources = true;
-            if (data.data.length) {
-                textContent += '<div class="msg-sources"><strong>参考来源：</strong>' +
-                    data.data.map(s => `<span class="source-tag">${escapeHtml(s.source)}</span>`).join('') +
-                    '</div>';
-            }
+            sourcesHtml = formatSources(data.data);
+            hasContent = true;
+            renderContent();
+        } else if (data.type === 'meta') {
+            hasContent = true;
+        } else if (data.type === 'error') {
+            aiMsg.querySelector('.msg-content').innerHTML =
+                `❌ ${escapeHtml(data.message)}`;
+            eventSource.close();
+            isProcessing = false;
         } else if (data.type === 'text') {
-            textContent += data.content;
-            aiMsg.querySelector('.msg-content').innerHTML = escapeHtml(textContent).replace(/\n/g, '<br>');
+            answerText += data.content;
+            hasContent = true;
+            renderContent();
         } else if (data.type === 'done') {
             aiMsg.querySelector('.msg-content').innerHTML +=
                 `<div class="msg-meta">⏱ ${data.time_ms.toFixed(0)}ms</div>`;
@@ -137,8 +177,9 @@ function streamQuery(query, aiMsg, topK, threshold) {
     };
 
     eventSource.onerror = function() {
-        if (!textContent) {
-            aiMsg.querySelector('.msg-content').innerHTML = '❌ 流式连接中断';
+        if (!hasContent) {
+            aiMsg.querySelector('.msg-content').innerHTML =
+                '❌ 流式连接中断，请检查服务日志或改用非流式模式';
         }
         eventSource.close();
         isProcessing = false;
