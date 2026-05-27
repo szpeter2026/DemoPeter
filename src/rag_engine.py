@@ -53,17 +53,17 @@ class RAGEngine:
 
     def _search(self, query_text: str, top_k: int = 5,
                 threshold: float = 0.5) -> list[dict]:
-        """多源检索：Chroma → pgvector 依次尝试"""
-        # 1. Chroma
+        """多源检索：Chroma → pgvector → SQLite 关键词 依次尝试"""
+        # 1. Chroma 语义搜索
         if self.vector_store.is_available:
             hits = self.vector_store.search(query_text, top_k=top_k, threshold=threshold)
             if hits:
                 return hits
-        # 2. pgvector
+        # 2. pgvector 语义搜索
         if self.pgvector_store.is_available:
             return self.pgvector_store.search(query_text, top_k=top_k, threshold=threshold)
-        # 3. 无结果
-        return []
+        # 3. SQLite 关键词检索（兜底，确保始终能从知识库召回内容）
+        return self.db.search_chunks(query_text, top_k=top_k)
 
     def query(self, query_text: str, top_k: int = 5,
               threshold: float = 0.5) -> RAGResult:
@@ -75,11 +75,17 @@ class RAGEngine:
         chunk_count = len(hits)
 
         if not hits:
-            # 无结果时直接对话
-            messages = [
-                {"role": "system", "content": "你是一个知识库助手。知识库中没有找到相关资料，请根据你的知识回答。"},
-                {"role": "user", "content": query_text},
-            ]
+            # 所有检索方式均无结果，告知用户
+            answer = "知识库中暂未找到与您问题相关的资料，请尝试更换关键词或导入更多文档。"
+            elapsed_ms = (time.time() - start) * 1000
+            self.db.log_query(query_text, self.ai.provider, elapsed_ms, 0)
+            return RAGResult(
+                query=query_text,
+                answer=answer,
+                sources=[],
+                response_time_ms=round(elapsed_ms, 2),
+                chunk_count=0,
+            )
         else:
             # 2. 增强：构建上下文
             context_parts = []
@@ -119,10 +125,11 @@ class RAGEngine:
         hits = self._search(query_text, top_k=top_k, threshold=threshold)
 
         if not hits:
-            messages = [
-                {"role": "system", "content": "你是一个知识库助手，请根据你的知识回答。"},
-                {"role": "user", "content": query_text},
-            ]
+            # 所有检索方式均无结果
+            def _empty():
+                yield "知识库中暂未找到与您问题相关的资料，请尝试更换关键词或导入更多文档。"
+                yield 0.0
+            return _empty(), []
         else:
             context_parts = [f"[来源 {i + 1}: {h['metadata'].get('source_file', '')}]\n{h['content']}"
                              for i, h in enumerate(hits)]

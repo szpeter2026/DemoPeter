@@ -11,8 +11,8 @@ pdfplumber==0.11.5
 markdown==3.7
 beautifulsoup4==4.12.3
 
-# 向量数据库
-chromadb==0.6.3
+# 向量数据库（Windows Python 3.13 需 MSVC 运行时，不可用时自动回退 SQLite FTS5）
+chromadb
 
 # pgvector + PostgreSQL（可选）
 psycopg2-binary==2.9.10
@@ -30,3 +30,4 @@ matplotlib==3.10.0
 rich==13.9.4
 tqdm==4.67.1
 requests==2.32.3
+jieba

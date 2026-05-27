@@ -151,6 +151,109 @@ class DBManager:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def _tokenize(self, text: str) -> list[str]:
+        """中文分词 + 提取有意义的检索词"""
+        tokens = []
+        try:
+            import jieba
+            words = jieba.lcut(text)
+        except ImportError:
+            words = text.split()
+        for w in words:
+            w = w.strip()
+            if len(w) > 1:
+                tokens.append(w)
+        return tokens
+
+    def search_chunks(self, query_text: str, top_k: int = 5) -> list[dict]:
+        """SQLite 关键词检索（向量库不可用时的兜底方案）
+        
+        使用 jieba 中文分词 + SQLite FTS5 全文索引 + LIKE 模糊匹配。
+        """
+        tokens = self._tokenize(query_text)
+        if not tokens:
+            return []
+
+        with self._conn() as conn:
+            # 确保 FTS5 索引存在
+            conn.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts 
+                USING fts5(content, content=chunks, content_rowid=id)
+            """)
+            conn.commit()
+
+            results = []
+            seen_ids = set()
+
+            # 1. FTS5 全文搜索
+            try:
+                fts_query = ' OR '.join(f'"{t}"' for t in tokens)
+                rows = conn.execute(
+                    """SELECT c.id, c.document_id, c.chunk_index, c.content, 
+                              c.char_count, c.metadata, d.title as doc_title,
+                              rank
+                       FROM chunks_fts f
+                       JOIN chunks c ON c.id = f.rowid
+                       JOIN documents d ON c.document_id = d.id
+                       WHERE chunks_fts MATCH ?
+                       ORDER BY rank
+                       LIMIT ?""",
+                    (fts_query, top_k * 2),
+                ).fetchall()
+                for r in rows:
+                    if r["id"] not in seen_ids:
+                        seen_ids.add(r["id"])
+                        results.append({
+                            "id": f"chunk_{r['id']}",
+                            "content": r["content"],
+                            "metadata": {
+                                "source_file": r["doc_title"] or f"doc_{r['document_id']}",
+                                "doc_id": r["document_id"],
+                                "chunk_index": r["chunk_index"],
+                            },
+                            "similarity": 0.6,
+                        })
+            except Exception:
+                pass
+
+            # 2. LIKE 模糊匹配补充（安全参数化）
+            if len(results) < top_k:
+                conditions = []
+                params = []
+                for t in tokens:
+                    conditions.append("c.content LIKE ?")
+                    params.append(f"%{t}%")
+                where_clause = " OR ".join(conditions)
+                params.append(top_k)
+                rows = conn.execute(
+                    f"""SELECT c.id, c.document_id, c.chunk_index, c.content,
+                               c.char_count, c.metadata, d.title as doc_title
+                        FROM chunks c
+                        JOIN documents d ON c.document_id = d.id
+                        WHERE ({where_clause})
+                        ORDER BY c.char_count DESC
+                        LIMIT ?""",
+                    params,
+                ).fetchall()
+                for r in rows:
+                    if r["id"] not in seen_ids:
+                        # 相似度按命中词数比例估算
+                        match_score = sum(
+                            1 for t in tokens if t in r["content"]
+                        ) / len(tokens) * 0.4
+                        results.append({
+                            "id": f"chunk_{r['id']}",
+                            "content": r["content"],
+                            "metadata": {
+                                "source_file": r["doc_title"] or f"doc_{r['document_id']}",
+                                "doc_id": r["document_id"],
+                                "chunk_index": r["chunk_index"],
+                            },
+                            "similarity": round(match_score, 3),
+                        })
+
+            return results[:top_k]
+
 
 # ===== 数据库 Schema =====
 
