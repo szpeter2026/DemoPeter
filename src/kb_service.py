@@ -157,6 +157,88 @@ class KnowledgeBaseService:
         summary = self._import_files(all_files, force=force)
         return summary
 
+    def import_jsonl(
+        self,
+        jsonl_path: str | Path,
+        *,
+        force: bool = False,
+        label: str = "md_import_staging",
+    ) -> ImportSummary:
+        """从预处理 JSONL 文件批量入库（跳过磁盘重读，直接使用预处理 content）。"""
+        jsonl_path = Path(jsonl_path).resolve()
+        if not jsonl_path.exists():
+            raise FileNotFoundError(f"JSONL 文件不存在: {jsonl_path}")
+
+        with open(jsonl_path, "r", encoding="utf-8") as f:
+            records = [json.loads(line) for line in f if line.strip()]
+
+        summary = ImportSummary(total=len(records))
+        start = time.time()
+
+        for rec in records:
+            file_path = rec.get("source_file", "")
+            title     = rec.get("title", Path(file_path).stem)
+            language  = rec.get("language", "unknown")
+            content   = rec.get("content", "")
+            doc_type  = rec.get("content_type", "general")
+
+            if not content or not file_path:
+                summary.skipped += 1
+                continue
+
+            existing_doc = self._find_doc_by_path(file_path)
+            if existing_doc and not force:
+                summary.skipped += 1
+                continue
+            if existing_doc and force:
+                self.db.delete_document(existing_doc["id"])
+                if self.vector_store.is_available:
+                    self.vector_store.delete_document(str(existing_doc["id"]))
+                if self.pgvector_store.is_available:
+                    self.pgvector_store.delete_document(existing_doc["id"])
+
+            doc_id = None
+            try:
+                meta = {
+                    "corpus_id": label,
+                    "corpus_label": label,
+                    "language": language,
+                    "content_type": doc_type,
+                    "preprocessed": True,
+                }
+                doc_id = self.db.register_document(
+                    title=title,
+                    file_path=file_path,
+                    doc_type=doc_type,
+                    file_size=len(content.encode("utf-8")),
+                    metadata=meta,
+                )
+
+                # 直接用预处理好的 content 做分块
+                chunks = self.processor.chunk_text(
+                    content,
+                    metadata={**meta, "source_file": file_path, "title": title},
+                )
+                self.db.save_chunks(doc_id, chunks)
+
+                if self.vector_store.is_available:
+                    self.vector_store.add_documents(str(doc_id), chunks)
+                if self.pgvector_store.is_available:
+                    self.pgvector_store.add_documents(doc_id, chunks)
+
+                self.db.update_document_status(doc_id, "completed", len(chunks))
+                summary.success += 1
+                summary.by_corpus[label] = summary.by_corpus.get(label, 0) + 1
+
+            except Exception as exc:
+                if doc_id is not None:
+                    self.db.delete_document(doc_id)
+                summary.failed += 1
+                summary.errors.append(f"[{label}] {title}: {exc}")
+
+        summary.elapsed_sec = round(time.time() - start, 2)
+        return summary
+
     def list_corpus_sources(self) -> list[dict]:
         sources = load_corpus_sources()
         result = []

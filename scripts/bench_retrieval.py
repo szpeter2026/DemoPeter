@@ -674,7 +674,7 @@ def cleanup_test_data(store: VectorStore, db: DBManager, doc_ids: list[int], tmp
     import sqlite3
     conn = sqlite3.connect(config.METADATA_DB)
     placeholders = ",".join("?" * len(doc_ids))
-    conn.execute(f"DELETE FROM chunks WHERE doc_id IN ({placeholders})", doc_ids)
+    conn.execute(f"DELETE FROM chunks WHERE document_id IN ({placeholders})", doc_ids)
     conn.execute(f"DELETE FROM documents WHERE id IN ({placeholders})", doc_ids)
     conn.commit()
     conn.close()

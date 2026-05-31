@@ -44,9 +44,11 @@ services:
     ports:
       - "5200:5200"
     volumes:
-      # 数据持久化（重要：SQLite 元数据 + 知识库文件都在这里）
-      - ./db:/app/db
-      - ./knowledge_base:/app/knowledge_base
+      # 数据持久化 → C 盘（Docker Desktop 对 C 盘有默认共享权限）
+      - C:/DemoPeterTemp/db:/app/db
+      - C:/DemoPeterTemp/knowledge_base:/app/knowledge_base
+      # 预处理语料（JSONL 批量入库）
+      - C:/DemoPeterTemp:/app/import_staging
     env_file:
       - .env.production
     depends_on:
@@ -62,10 +64,10 @@ services:
     image: chromadb/chroma:latest
     container_name: szpeter2026-chroma
     restart: unless-stopped
-    expose:
-      - "8000"
+    ports:
+      - "8000:8000"
     volumes:
-      - ./db/chroma_docker:/chroma/chroma
+      - C:/DemoPeterTemp/db/chroma_docker:/chroma/chroma
     environment:
       - IS_PERSISTENT=TRUE
       - ANONYMIZED_TELEMETRY=FALSE
@@ -83,8 +85,8 @@ services:
     expose:
       - "5432"
     volumes:
-      - ./db/pgdata:/var/lib/postgresql/data
-      - ./db/pg-init:/docker-entrypoint-initdb.d
+      - C:/DemoPeterTemp/db/pgdata:/var/lib/postgresql/data
+      - C:/DemoPeterTemp/db/pg-init:/docker-entrypoint-initdb.d
     environment:
       POSTGRES_USER: ${PGVECTOR_USER:-szpeter}
       POSTGRES_PASSWORD: ${PGVECTOR_PASSWORD:-Szpeter2026!}

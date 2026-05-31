@@ -5,14 +5,31 @@ __pycache__/
 *.pyc
 .git/
 .gitignore
-db/chroma_docker/
-db/chroma_data/
-db/pgdata/
-db/*.db
-scripts/_test*.py
-scripts/_diag*.py
-scripts/start-dev.ps1
+
+# IDE / 编辑器
+.idea/
+.vs/
+.vscode/
+
+# Docker 镜像缓存
+docker-images/
+
+# 本地数据目录（通过 volume 挂载）
+db/
+data/
+md_import_staging/
+nine_repos_staging/
+knowledge_base/
+
+# 临时 / 非项目文件
 reports/
 tests/
+fix_env.py
+preprocess.py
+preprocess_report.json
+result.txt
+verify_output.txt
+verify_result.txt
+hello.txt
 *.md
 !docs/*.md
