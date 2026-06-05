@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from flask import Flask, render_template, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
+from werkzeug.utils import secure_filename
 
 from config.settings import config
 from src.db_manager import DBManager
@@ -148,63 +149,101 @@ def api_import_documents():
 
     for file_info in files:
         try:
-            # 检查是否已存在
-            existing = db.get_documents()
-            existing_paths = {d.get("file_path", "") for d in existing if isinstance(d, dict)}
-            if file_info["file_path"] in existing_paths:
-                results["details"].append({
-                    "title": file_info["title"],
-                    "status": "skipped",
-                    "reason": "已存在",
-                })
-                continue
-
-            # 注册文档
-            doc_id = db.register_document(
-                title=file_info["title"],
+            detail = _process_one_file(
                 file_path=file_info["file_path"],
+                title=file_info["title"],
                 doc_type=file_info["doc_type"],
                 file_size=file_info.get("file_size", 0),
             )
-
-            # 提取文本并分块
-            text, chunks = processor.process_file(file_info["file_path"])
-
-            # 保存分块到元数据库
-            db.save_chunks(doc_id, chunks)
-
-            # 添加到向量库
-            vector_write_ok = True
-            if vector_store.is_available:
-                added = vector_store.add_documents(str(doc_id), chunks)
-                # 写入后验证：用第一条 chunk 内容做检索验证
-                if added > 0 and chunks:
-                    verify_query = chunks[0]["content"][:100]
-                    verify_hits = vector_store.search(verify_query, top_k=1, threshold=0.0)
-                    if verify_hits:
-                        print(f"[Import] ✓ 向量写入验证通过: doc_id={doc_id}")
-                    else:
-                        vector_write_ok = False
-                        print(f"[Import] ⚠️ 向量写入验证失败: doc_id={doc_id} 无法通过检索找回")
-
-            if pgvector_store.is_available:
-                pgvector_store.add_documents(doc_id, chunks)
-
-            # 更新状态（标注向量写入状态）
-            status = "completed" if vector_write_ok else "completed_no_vector"
-            db.update_document_status(doc_id, status, len(chunks))
-            results["success"] += 1
-            results["details"].append({
-                "title": file_info["title"],
-                "doc_id": doc_id,
-                "status": "completed",
-                "chunks": len(chunks),
-            })
+            if detail.get("status") == "completed":
+                results["success"] += 1
+            elif detail.get("status") == "skipped":
+                results["details"].append(detail)
+                continue
+            results["details"].append(detail)
 
         except Exception as e:
             results["failed"] += 1
             results["details"].append({
                 "title": file_info["title"],
+                "status": "failed",
+                "reason": str(e)[:200],
+            })
+
+    return jsonify(results)
+
+
+def _process_one_file(file_path: str, title: str, doc_type: str, file_size: int) -> dict:
+    """处理单个文件：注册 → 提取 → 分块 → 写入向量库（复用逻辑）"""
+    # 检查是否已存在
+    existing = db.get_documents()
+    existing_paths = {d.get("file_path", "") for d in existing if isinstance(d, dict)}
+    if file_path in existing_paths:
+        return {"title": title, "status": "skipped", "reason": "已存在"}
+
+    doc_id = db.register_document(
+        title=title, file_path=file_path,
+        doc_type=doc_type, file_size=file_size,
+    )
+
+    text, chunks = processor.process_file(file_path)
+    db.save_chunks(doc_id, chunks)
+
+    vector_write_ok = True
+    if vector_store.is_available:
+        added = vector_store.add_documents(str(doc_id), chunks)
+        if added > 0 and chunks:
+            verify_hits = vector_store.search(chunks[0]["content"][:100], top_k=1, threshold=0.0)
+            if not verify_hits:
+                vector_write_ok = False
+
+    if pgvector_store.is_available:
+        pgvector_store.add_documents(doc_id, chunks)
+
+    status = "completed" if vector_write_ok else "completed_no_vector"
+    db.update_document_status(doc_id, status, len(chunks))
+    return {"title": title, "doc_id": doc_id, "status": "completed", "chunks": len(chunks)}
+
+
+@app.route("/api/documents/upload", methods=["POST"])
+def api_upload_documents():
+    """上传文件并批量导入 — 从浏览器直接上传文档"""
+    if "files" not in request.files:
+        return jsonify({"error": "请选择文件", "details": [], "total": 0, "success": 0, "failed": 0}), 400
+
+    files = request.files.getlist("files")
+    # 确保上传目录存在
+    config.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+    results = {"total": len(files), "success": 0, "failed": 0, "details": []}
+
+    for f in files:
+        if not f.filename:
+            continue
+        try:
+            safe_name = secure_filename(f.filename)
+            save_path = config.UPLOAD_DIR / safe_name
+            f.save(str(save_path))
+
+            resolved = str(save_path.resolve())
+            suffix = save_path.suffix.lower().lstrip(".")
+            file_size = save_path.stat().st_size
+
+            detail = _process_one_file(
+                file_path=resolved,
+                title=save_path.stem,
+                doc_type=suffix,
+                file_size=file_size,
+            )
+            if detail.get("status") == "completed":
+                results["success"] += 1
+            elif detail.get("status") == "skipped":
+                detail["status"] = "skipped"
+            results["details"].append(detail)
+        except Exception as e:
+            results["failed"] += 1
+            results["details"].append({
+                "title": f.filename,
                 "status": "failed",
                 "reason": str(e)[:200],
             })

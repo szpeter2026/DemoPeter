@@ -22,6 +22,7 @@ class Config:
     KB_DIR: Path = PROJECT_ROOT / "knowledge_base"
     DOCS_DIR: Path = KB_DIR / "documents"
     CHUNKS_DIR: Path = KB_DIR / "chunks"
+    UPLOAD_DIR: Path = PROJECT_ROOT / "data" / "uploads"
     TEMPLATES_DIR: Path = PROJECT_ROOT / "templates"
     STATIC_DIR: Path = PROJECT_ROOT / "static"
     SCRIPTS_DIR: Path = PROJECT_ROOT / "scripts"

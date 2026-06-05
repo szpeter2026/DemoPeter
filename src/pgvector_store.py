@@ -75,7 +75,11 @@ class PgvectorStore:
             return 0
 
         texts = [c["content"] for c in chunks]
-        embeddings = self._embed_batch(texts)
+        try:
+            embeddings = self._embed_batch(texts)
+        except Exception as e:
+            print(f"[pgvector] Embedding 失败 (Ollama 不可用?): {e}")
+            return 0
 
         with self._conn.cursor() as cur:
             # 确保 documents 表有对应的记录（否则 search 时 JOIN 会失败）
@@ -112,7 +116,10 @@ class PgvectorStore:
         if not self.is_available:
             return []
 
-        query_vec = self._embed(query)
+        try:
+            query_vec = self._embed(query)
+        except Exception:
+            return []
 
         with self._conn.cursor() as cur:
             cur.execute(
@@ -151,20 +158,23 @@ class PgvectorStore:
         """获取统计"""
         if not self.is_available:
             return {"available": False}
-        with self._conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM chunks")
-            chunks = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL")
-            vectors = cur.fetchone()[0]
-        return {
-            "available": True,
-            "mode": "pgvector",
-            "host": f"{config.PGVECTOR_HOST}:{config.PGVECTOR_PORT}",
-            "total_chunks": chunks,
-            "total_vectors": vectors,
-            "embedding_model": config.OLLAMA_EMBEDDING_MODEL,
-            "dimensions": config.PGVECTOR_EMBEDDING_DIM,
-        }
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM chunks")
+                chunks = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM chunks WHERE embedding IS NOT NULL")
+                vectors = cur.fetchone()[0]
+            return {
+                "available": True,
+                "mode": "pgvector",
+                "host": f"{config.PGVECTOR_HOST}:{config.PGVECTOR_PORT}",
+                "total_chunks": chunks,
+                "total_vectors": vectors,
+                "embedding_model": config.OLLAMA_EMBEDDING_MODEL,
+                "dimensions": config.PGVECTOR_EMBEDDING_DIM,
+            }
+        except Exception as e:
+            return {"available": True, "mode": "pgvector", "error": str(e)[:100]}
 
     def close(self):
         """关闭连接"""

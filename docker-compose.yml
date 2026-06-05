@@ -67,11 +67,10 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./data/db/chroma_docker:/chroma/chroma
+      - chroma_data:/data
     environment:
       - IS_PERSISTENT=TRUE
       - ANONYMIZED_TELEMETRY=FALSE
-      - PERSIST_DIRECTORY=/chroma/chroma
     networks:
       - szpeter2026-net
 
@@ -82,11 +81,11 @@ services:
     image: pgvector/pgvector:pg17
     container_name: szpeter2026-pgvector
     restart: unless-stopped
-    expose:
-      - "5432"
+    ports:
+      - "5432:5432"
     volumes:
-      - ./data/db/pgdata:/var/lib/postgresql/data
-      - ./data/db/pg-init:/docker-entrypoint-initdb.d
+      - pgvector_data:/var/lib/postgresql/data
+      - pgvector_init:/docker-entrypoint-initdb.d
     environment:
       POSTGRES_USER: ${PGVECTOR_USER:-szpeter}
       POSTGRES_PASSWORD: ${PGVECTOR_PASSWORD}
@@ -103,3 +102,8 @@ services:
 networks:
   szpeter2026-net:
     driver: bridge
+
+volumes:
+  chroma_data:
+  pgvector_data:
+  pgvector_init:

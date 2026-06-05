@@ -339,6 +339,36 @@ body {
 .doc-type-txt { background: #D1FAE5; color: #059669; }
 
 /* ===== Import Area ===== */
+.import-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+    border-bottom: 2px solid var(--border);
+    padding-bottom: 8px;
+}
+
+.import-tab {
+    background: transparent;
+    border: none;
+    padding: 8px 16px;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    transition: var(--transition);
+}
+
+.import-tab:hover {
+    background: var(--primary-light);
+    color: var(--primary);
+}
+
+.import-tab.active {
+    background: var(--primary);
+    color: white;
+}
+
 .import-area {
     border: 2px dashed var(--border);
     border-radius: var(--radius);
@@ -353,8 +383,53 @@ body {
     background: var(--primary-light);
 }
 
+.import-area.drag-over {
+    border-color: var(--primary);
+    background: #E0E7FF;
+    transform: scale(1.01);
+}
+
 .import-icon { font-size: 48px; margin-bottom: 12px; }
 .import-hint { color: var(--text-light); font-size: 13px; margin-top: 8px; }
+
+.file-list {
+    margin-top: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+    background: #F8FAFC;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.file-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+}
+
+.file-item:last-child {
+    border-bottom: none;
+}
+
+.file-name {
+    flex: 1;
+    font-weight: 500;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.file-size {
+    color: var(--text-light);
+    font-size: 12px;
+    min-width: 60px;
+    text-align: right;
+}
 
 .import-actions {
     margin-top: 16px;
