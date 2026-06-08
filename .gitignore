@@ -58,3 +58,7 @@ tmp/
 # 鏃ュ織鏂囦欢
 *.log
 logs/
+
+# ChromaDB 数据库文件
+db/d_index_data/
+db/d_index_v2/

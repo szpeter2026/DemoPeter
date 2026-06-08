@@ -7,9 +7,9 @@ import os
 from typing import Optional
 
 from config.settings import config
+from config.logging_config import get_logger
 
-# Chroma 本地持久化目录（项目内置，无需 Docker）
-CHROMA_PERSIST_DIR = str(config.DB_DIR / "chroma_data")
+logger = get_logger("vector_store")
 
 
 def squared_l2_to_cosine_similarity(squared_l2: float) -> float:
@@ -94,15 +94,15 @@ class VectorStore:
             try:
                 embedding_fn = embedding_functions.DefaultEmbeddingFunction()
             except Exception as e:
-                print(f"[VectorStore] ⚠️ 默认 Embedding 函数加载失败: {e}")
-                print("[VectorStore] 请确保已安装 onnxruntime: pip install onnxruntime")
+                logger.error("默认 Embedding 函数加载失败: %s", e)
+                logger.error("请确保已安装 onnxruntime: pip install onnxruntime")
                 self._client = None
                 self._collection = None
                 self._mode = "unavailable"
                 return False
 
-            os.makedirs(CHROMA_PERSIST_DIR, exist_ok=True)
-            self._client = chromadb.PersistentClient(path=CHROMA_PERSIST_DIR)
+            os.makedirs(config.CHROMA_PERSIST_DIR, exist_ok=True)
+            self._client = chromadb.PersistentClient(path=config.CHROMA_PERSIST_DIR)
             self._collection = self._client.get_or_create_collection(
                 name=self.collection_name,
                 embedding_function=embedding_fn,
@@ -111,7 +111,7 @@ class VectorStore:
             self._mode = "persistent"
             return True
         except Exception as e:
-            print(f"[VectorStore] 本地持久化初始化失败: {e}")
+            logger.error("本地持久化初始化失败: %s", e)
             self._client = None
             self._collection = None
             self._mode = "unavailable"

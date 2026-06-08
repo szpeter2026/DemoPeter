@@ -44,6 +44,11 @@ class Config:
     CHROMA_HOST: str = os.getenv("CHROMA_HOST", "localhost")
     CHROMA_PORT: int = int(os.getenv("CHROMA_PORT", "8000"))
     CHROMA_COLLECTION: str = os.getenv("CHROMA_COLLECTION", "szpeter2026_kb")
+    # Chroma 持久化目录（可覆盖，支持代码和数据分离部署）
+    CHROMA_PERSIST_DIR: str = os.getenv(
+        "CHROMA_PERSIST_DIR",
+        str(DB_DIR / "chroma_data"),
+    )
 
     # ===== pgvector 向量数据库（可选） =====
     PGVECTOR_ENABLED: bool = os.getenv("PGVECTOR_ENABLED", "false").lower() == "true"
@@ -114,8 +119,93 @@ class Config:
     PG_PASSWORD: str = os.getenv("PG_PASSWORD", "")
     PG_DATABASE: str = os.getenv("PG_DATABASE", "")
 
+    # ===== Ollama 模型路径 =====
+    # 官方 GUI 默认路径: ~/.ollama/models
+    # 环境变量可覆盖: OLLAMA_MODELS
+    OLLAMA_MODELS_DIR: str = os.getenv(
+        "OLLAMA_MODELS",
+        str(Path.home() / ".ollama" / "models"),
+    )
+
     def __repr__(self) -> str:
         return f"<Config provider={self.AI_PROVIDER}, web={self.WEB_HOST}:{self.WEB_PORT}>"
+
+    def health_check(self) -> dict:
+        """启动时健康检查 — 验证关键路径和依赖是否存在
+
+        Returns:
+            {"ok": True/False, "warnings": [...], "errors": [...]}
+        """
+        import socket
+        warnings = []
+        errors = []
+
+        # 1. Chroma 持久化目录
+        chroma_dir = Path(self.CHROMA_PERSIST_DIR)
+        if not chroma_dir.exists():
+            errors.append(f"Chroma 目录不存在: {self.CHROMA_PERSIST_DIR}")
+        else:
+            sqlite_file = chroma_dir / "chroma.sqlite3"
+            if not sqlite_file.exists():
+                warnings.append(f"Chroma SQLite 不存在 ({sqlite_file})- 将自动创建")
+
+        # 2. Ollama 模型目录
+        ollama_models = Path(self.OLLAMA_MODELS_DIR)
+        if not ollama_models.exists():
+            warnings.append(
+                f"Ollama 模型目录不存在: {self.OLLAMA_MODELS_DIR} — "
+                "如使用 Chroma 默认嵌入则无影响"
+            )
+
+        # 3. Ollama 服务可达性
+        try:
+            host = self.OLLAMA_BASE_URL.replace("http://", "").replace("https://", "").split(":")[0]
+            port = int(self.OLLAMA_BASE_URL.split(":")[-1])
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            result = sock.connect_ex((host, port))
+            sock.close()
+            if result != 0:
+                warnings.append(
+                    f"Ollama 服务不可达 ({self.OLLAMA_BASE_URL}) — "
+                    "如使用 Chroma 默认嵌入或云端 LLM 则无影响"
+                )
+        except Exception:
+            warnings.append(f"Ollama 地址格式异常: {self.OLLAMA_BASE_URL}")
+
+        # 4. D 盘项目路径（仅检查 d_indexer 用到的）
+        try:
+            from d_indexer.projects import D_PROJECT_ROOTS
+            missing = []
+            for root in D_PROJECT_ROOTS:
+                if not Path(root).exists():
+                    missing.append(root)
+            if missing:
+                warnings.append(f"D 盘 {len(missing)} 个项目路径不存在: {missing[:3]}...")
+        except ImportError:
+            pass  # d_indexer 可能还没装
+
+        # 5. 必要目录自动创建
+        for d in [self.DB_DIR, self.KB_DIR, self.DOCS_DIR, self.CHUNKS_DIR,
+                  self.UPLOAD_DIR, self.TEMPLATES_DIR, self.STATIC_DIR]:
+            d.mkdir(parents=True, exist_ok=True)
+
+        # 6. AI 配置
+        if self.AI_PROVIDER == "deepseek" and not self.DEEPSEEK_API_KEY:
+            warnings.append("DeepSeek API Key 未设置 — 仅检索模式可用")
+
+        return {
+            "ok": len(errors) == 0,
+            "warnings": warnings,
+            "errors": errors,
+            "checks": {
+                "chroma_dir": str(self.CHROMA_PERSIST_DIR),
+                "chroma_exists": Path(self.CHROMA_PERSIST_DIR).exists(),
+                "ollama_url": self.OLLAMA_BASE_URL,
+                "ollama_models_dir": self.OLLAMA_MODELS_DIR,
+                "ollama_models_exist": Path(self.OLLAMA_MODELS_DIR).exists(),
+            },
+        }
 
 
 # 单例

@@ -4,11 +4,7 @@ szpeter2026 - Web 管理面板
 """
 import sys
 import json
-import logging
 from pathlib import Path
-
-logging.basicConfig(level=logging.WARNING,
-                    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 # 添加项目根目录到路径
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -18,6 +14,14 @@ from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
 from config.settings import config
+from config.logging_config import setup_logging, get_logger
+
+# 初始化日志系统
+logger = setup_logging(
+    log_dir=config.PROJECT_ROOT / "logs",
+    level="DEBUG" if config.WEB_DEBUG else "INFO",
+)
+
 from src.db_manager import DBManager
 from src.doc_processor import DocumentProcessor
 from src.vector_store import VectorStore
@@ -27,6 +31,10 @@ from src.ai_client import AIClient
 from src.report_gen import ReportGenerator
 from src.gitea_webhook import GiteaWebhookHandler
 from src.outlook_client import OutlookClient
+
+# D 盘自动索引
+from d_indexer import DScanner, DIndexer, DScheduler, ScanConfig
+from d_indexer.projects import D_PROJECT_ROOTS
 
 app = Flask(__name__, template_folder=str(config.TEMPLATES_DIR),
             static_folder=str(config.STATIC_DIR))
@@ -39,6 +47,11 @@ pgvector_store = PgvectorStore()
 rag = RAGEngine()
 reporter = ReportGenerator()
 webhook_handler = GiteaWebhookHandler()
+
+# D 盘索引初始化
+d_scanner = DScanner(ScanConfig(project_roots=D_PROJECT_ROOTS))
+d_indexer = DIndexer(scanner=d_scanner, persist_dir=str(config.PROJECT_ROOT / "db" / "d_index_data"))
+d_scheduler = DScheduler(d_indexer, scan_hour=3, scan_minute=0)
 
 
 # ===== 页面路由 =====
@@ -75,6 +88,16 @@ def query_page():
 def reports_page():
     """报告页面"""
     return render_template("reports.html")
+
+
+@app.route("/d-search")
+def d_search_page():
+    """D 盘文件语义搜索页面"""
+    stats = d_indexer.list_projects() if d_indexer.is_available else []
+    return render_template("d_search.html",
+                           projects=stats,
+                           index_available=d_indexer.is_available,
+                           chunk_count=d_indexer.count)
 
 
 # ===== API — 统计 =====
@@ -125,6 +148,124 @@ def api_vector_health():
             "SQLite FTS5 关键词检索 (兜底)",
         ],
     })
+
+
+@app.route("/api/health/config")
+def api_config_health():
+    """配置健康检查 — 验证路径和依赖"""
+    result = config.health_check()
+    result["ollama_models_dir"] = config.OLLAMA_MODELS_DIR
+    result["actual_ollama_data"] = _find_ollama_data()
+    return jsonify(result)
+
+
+def _find_ollama_data() -> dict:
+    """实地勘查 Ollama 数据位置"""
+    candidates = [
+        str(config.OLLAMA_MODELS_DIR),
+        "D:/ollama-models",
+        str(Path.home() / ".ollama" / "models"),
+        "D:/DevTools/.ollama/models",
+    ]
+    found = {}
+    for c in candidates:
+        p = Path(c)
+        if p.exists():
+            blob_count = len(list(p.rglob("*"))) if p.is_dir() else 0
+            found[c] = {"exists": True, "files": blob_count}
+        else:
+            found[c] = {"exists": False}
+    return found
+
+
+@app.route("/api/health/chroma")
+def api_chroma_deep_health():
+    """Chroma 深度健康检查 — SQLite + Segment 双向验证"""
+    import sqlite3
+    chroma_dir = Path(config.CHROMA_PERSIST_DIR)
+    result = {
+        "path": str(chroma_dir),
+        "exists": chroma_dir.exists(),
+        "collections": [],
+        "discrepancies": [],
+    }
+
+    if not chroma_dir.exists():
+        result["error"] = "Chroma 目录不存在"
+        return jsonify(result)
+
+    # 1. SQLite 分析
+    sqlite_path = chroma_dir / "chroma.sqlite3"
+    if sqlite_path.exists():
+        try:
+            conn = sqlite3.connect(str(sqlite_path))
+            cur = conn.cursor()
+            cur.execute("SELECT name FROM collections")
+            collections = [r[0] for r in cur.fetchall()]
+
+            for col_name in collections:
+                try:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM embeddings "
+                        "WHERE segment_id IN (SELECT id FROM segments "
+                        "WHERE collection IN (SELECT id FROM collections WHERE name=?))",
+                        (col_name,),
+                    )
+                    sql_count = cur.fetchone()[0]
+                except Exception:
+                    sql_count = -1
+
+                result["collections"].append({
+                    "name": col_name,
+                    "sqlite_embeddings": sql_count,
+                })
+            conn.close()
+        except Exception as e:
+            result["sqlite_error"] = str(e)
+
+    # 2. Segment 文件分析
+    segment_dirs = list(chroma_dir.glob("*/"))
+    for sd in segment_dirs:
+        if sd.is_dir() and sd.name != "__pycache__":
+            bin_files = list(sd.glob("data_level*.bin"))
+            bin_size = sum(f.stat().st_size for f in bin_files)
+            segment_info = {
+                "id": sd.name,
+                "bin_files": len(bin_files),
+                "total_bytes": bin_size,
+                "total_mb": round(bin_size / 1024 / 1024, 2),
+            }
+            # 对比 Chroma API 计数
+            try:
+                import chromadb
+                client = chromadb.PersistentClient(path=str(chroma_dir))
+                for col in client.list_collections():
+                    api_count = col.count()
+                    for entry in result["collections"]:
+                        if entry["name"] == col.name:
+                            entry["chroma_api_count"] = api_count
+                            # 检测异常
+                            if api_count == 0 and bin_size > 100_000:
+                                result["discrepancies"].append({
+                                    "type": "api_zero_but_large_segment",
+                                    "collection": col.name,
+                                    "details": (
+                                        f"Chroma API 报告 0 vectors，但 segment "
+                                        f"文件占用 {round(bin_size/1024/1024, 1)}MB"
+                                    ),
+                                })
+            except Exception:
+                pass
+
+    # 3. 总健康评分
+    total_discrepancies = len(result["discrepancies"])
+    result["healthy"] = total_discrepancies == 0
+    result["summary"] = (
+        "正常" if total_discrepancies == 0
+        else f"{total_discrepancies} 个异常"
+    )
+
+    return jsonify(result)
 
 
 @app.route("/api/documents/import", methods=["POST"])
@@ -424,6 +565,97 @@ def api_gitea_webhook():
     return jsonify(result)
 
 
+# ===== API — D 盘索引 =====
+
+@app.route("/api/d-index/search")
+def api_d_index_search():
+    """语义搜索 D 盘文件"""
+    q = request.args.get("q", "").strip()
+    if not q:
+        return jsonify({"error": "请输入搜索词"}), 400
+
+    top_k = request.args.get("top_k", 10, type=int)
+    project = request.args.get("project")
+    file_type = request.args.get("type")
+
+    results = d_indexer.search(q, top_k=top_k, project_filter=project, file_type_filter=file_type)
+    return jsonify({
+        "query": q,
+        "results": [
+            {
+                "file_path": r.file_path,
+                "project": r.project_name,
+                "content": r.content,
+                "file_type": r.file_type,
+                "similarity": r.similarity,
+                "last_modified": r.last_modified,
+            }
+            for r in results
+        ],
+        "total": len(results),
+    })
+
+
+@app.route("/api/d-index/scan", methods=["POST"])
+def api_d_index_scan():
+    """手动触发 D 盘扫描"""
+    data = request.get_json() or {}
+    mode = data.get("mode", "incremental")
+
+    if mode == "full":
+        result = d_indexer.index_all()
+    else:
+        result = d_indexer.incremental_scan()
+
+    return jsonify({
+        "mode": mode,
+        "total_files": result.total_files,
+        "new_chunks": result.new_chunks,
+        "skipped_chunks": result.skipped_chunks,
+        "duration_seconds": result.scan_duration_seconds,
+        "timestamp": result.last_scan_time,
+    })
+
+
+@app.route("/api/d-index/stats")
+def api_d_index_stats():
+    """D 盘索引导航"""
+    if not d_indexer.is_available:
+        return jsonify({"available": False, "chunks": 0, "projects": []})
+
+    projects = d_indexer.list_projects()
+    return jsonify({
+        "available": True,
+        "chunks": d_indexer.count,
+        "projects": projects,
+        "collection": "d_drive_index",
+        "project_roots": len(D_PROJECT_ROOTS),
+        "scheduler_running": d_scheduler.is_running,
+        "last_scan": d_scheduler.last_scan_time,
+    })
+
+
+@app.route("/api/d-index/projects")
+def api_d_index_projects():
+    """已索引项目列表"""
+    projects = d_indexer.list_projects() if d_indexer.is_available else []
+    scheduled = d_scheduler.is_running
+    return jsonify({
+        "projects": projects,
+        "scheduler_running": scheduled,
+        "last_scan": d_scheduler.last_scan_time,
+    })
+
+
+@app.route("/api/d-index/clear", methods=["POST"])
+def api_d_index_clear():
+    """清空 D 盘索引"""
+    if not d_indexer.is_available:
+        return jsonify({"error": "索引不可用"}), 500
+    d_indexer.clear_index()
+    return jsonify({"status": "cleared"})
+
+
 # ===== 启动入口 =====
 
 def main():
@@ -454,21 +686,45 @@ def main():
     ai_ok, ai_hint = AIClient.is_configured()
     ai_status = config.AI_PROVIDER if ai_ok else "未就绪(仅检索模式)"
 
+    # D 盘索引状态
+    d_chunks = d_indexer.count if d_indexer.is_available else 0
+    d_status = f"已就绪 ({d_chunks} chunks)" if d_indexer.is_available else "不可用"
+
+    # 启动 D 盘每日扫描
+    if d_indexer.is_available and not d_scheduler.is_running:
+        d_scheduler.start()
+        logger.info("D 盘每日扫描已启动: %02d:%02d", d_scheduler.scan_hour, d_scheduler.scan_minute)
+
     # Embedding 健康警告
     if vec_health.get("embedding_ok") is False:
-        print("[VectorStore] ⚠️  Embedding 函数异常，请运行 scripts/verify_persistence.py 排查")
-        print("[VectorStore]    常见原因: 缺少 onnxruntime → pip install onnxruntime>=1.18.0")
+        logger.warning("Embedding 函数异常，请运行 scripts/verify_persistence.py 排查")
+        logger.warning("常见原因: 缺少 onnxruntime → pip install onnxruntime>=1.18.0")
 
+    # 启动健康检查
+    health = config.health_check()
+    if health["warnings"]:
+        for w in health["warnings"]:
+            logger.warning("健康检查: %s", w)
+    if health["errors"]:
+        for e in health["errors"]:
+            logger.error("健康检查: %s", e)
+
+    logger.info(
+        "DemoPeter 启动: AI=%s Chroma=%s D盘索引=%s 端口=%s",
+        ai_status, chroma_status, d_status, config.WEB_PORT,
+    )
     print(f"""
 ╔══════════════════════════════════════════════╗
 ║       szpeter2026 知识库管理面板            ║
 ║  AI 提供商: {ai_status:<31}║
 ║  Chroma:    {chroma_status:<31}║
 ║  pgvector:  {pg_status:<31}║
+║  D盘索引:   {d_status:<31}║
 ║  Ollama:    {config.OLLAMA_BASE_URL:<31}║
 ║  Webhook:   /api/webhook/gitea                ║
 ║  Notion:    {'已配置' if config.NOTION_TOKEN else '未配置':<31}║
-║  Health:    http://{config.WEB_HOST}:{config.WEB_PORT}/api/health/vector║
+║  Health:    http://{config.WEB_HOST}:{config.WEB_PORT}/api/health/config║
+║  D盘搜索:   http://{config.WEB_HOST}:{config.WEB_PORT}/d-search║
 ║  访问地址:  http://{config.WEB_HOST}:{config.WEB_PORT:<21}║
 ╚══════════════════════════════════════════════╝
     """)
