@@ -3,6 +3,10 @@ DScheduler - D 盘每日自动扫描调度器
 
 在 Flask 后台线程中运行，每天定时触发增量扫描。
 也支持手动触发。
+
+断点续传：
+- 启动时自动检测未完成的扫描并续传
+- 定时扫描默认使用增量模式（增量也受益于文件缓存加速）
 """
 import threading
 import time
@@ -15,7 +19,7 @@ logger = get_logger("d_scheduler")
 
 
 class DScheduler:
-    """每日扫描调度器"""
+    """每日扫描调度器（支持断点续传）"""
 
     def __init__(self, indexer, scan_hour: int = 3, scan_minute: int = 0):
         """
@@ -33,6 +37,7 @@ class DScheduler:
         self._last_scan: Optional[datetime] = None
         self._last_result = None
         self._on_scan_complete: Optional[Callable] = None
+        self._resume_on_start = True  # 启动时是否续传中断的扫描
 
     @property
     def is_running(self) -> bool:
@@ -46,16 +51,27 @@ class DScheduler:
     def last_result(self):
         return self._last_result
 
-    def start(self, on_complete: Callable = None):
-        """启动后台调度线程"""
+    def start(self, on_complete: Callable = None, resume: bool = True):
+        """启动后台调度线程
+        
+        Args:
+            on_complete: 扫描完成回调
+            resume: 是否在启动时检测并续传中断的扫描
+        """
         if self._running:
             return
 
         self._on_scan_complete = on_complete
+        self._resume_on_start = resume
         self._stop_event.clear()
         self._running = True
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
+
+        # 启动时的续传提示
+        if resume and self.indexer.checkpoint.has_incomplete():
+            logger.info("检测到未完成的扫描，首次扫描将自动续传")
+
         logger.info("已启动, 每天 %02d:%02d 自动扫描", self.scan_hour, self.scan_minute)
 
     def stop(self):
@@ -67,11 +83,31 @@ class DScheduler:
         logger.info("已停止")
 
     def trigger_now(self) -> dict:
-        """立即手动触发一次扫描"""
+        """立即手动触发一次增量扫描"""
         return self._do_scan("manual")
+
+    def trigger_full(self) -> dict:
+        """立即手动触发一次全量扫描（从零开始，重置断点）"""
+        logger.info("手动触发全量扫描（将重置所有断点）...")
+        self.indexer.checkpoint.reset_all()
+        return self._do_scan("manual_full", force_full=True)
+
+    def trigger_resume(self) -> dict:
+        """手动触发断点续传"""
+        return self._do_scan("manual_resume", force_full=True)
+
+    def get_checkpoint_status(self) -> list:
+        """获取所有项目的断点状态"""
+        return self.indexer.checkpoint.get_all_progress()
 
     def _run_loop(self):
         """调度主循环"""
+        # 启动时：如果有未完成的扫描，立即执行续传
+        if self._resume_on_start and self.indexer.checkpoint.has_incomplete():
+            logger.info("启动时检测到未完成的扫描，立即开始续传...")
+            time.sleep(2)  # 等 Flask 完全启动
+            self._do_scan("resume_on_start")
+
         while not self._stop_event.is_set():
             now = datetime.now()
             next_scan = now.replace(
@@ -96,16 +132,20 @@ class DScheduler:
             if not self._stop_event.is_set():
                 self._do_scan("scheduled")
 
-    def _do_scan(self, trigger: str) -> dict:
+    def _do_scan(self, trigger: str, force_full: bool = False) -> dict:
         """执行扫描"""
         logger.info("开始 %s 扫描...", trigger)
         start = time.time()
 
         try:
-            # 首次或索引为空则全量，否则增量
-            if self.indexer.count == 0:
-                result = self.indexer.index_all()
+            if force_full:
+                # 全量扫描（已重置断点）
+                result = self.indexer.index_with_resume(resume=True)
+            elif self.indexer.count == 0:
+                # 首次或索引为空 → 断点续传式全量
+                result = self.indexer.index_with_resume(resume=True)
             else:
+                # 增量扫描
                 result = self.indexer.incremental_scan()
 
             self._last_scan = datetime.now()
@@ -123,6 +163,7 @@ class DScheduler:
                 "total_files": result.total_files,
                 "new_chunks": result.new_chunks,
                 "skipped_chunks": result.skipped_chunks,
+                "skipped_files": result.skipped_files,
                 "duration_seconds": round(duration, 2),
                 "timestamp": self.last_scan_time,
             }

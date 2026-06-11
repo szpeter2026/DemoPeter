@@ -114,20 +114,73 @@ class DScanner:
                 continue
             yield from self._scan_dir(root_path, root)
 
-    def _scan_dir(self, root_path: Path, project_root: str) -> Iterator[ScannedFile]:
-        """递归扫描单个目录"""
+    def scan_with_resume(self, completed_dirs: set = None) -> Iterator[ScannedFile]:
+        """
+        断点续传式扫描 — 跳过已完成的目录。
+        
+        Args:
+            completed_dirs: 已完整处理过的目录路径集合（来自 checkpoint）
+        
+        遍历逻辑与 scan() 相同，但跳过 completed_dirs 中的目录。
+        注意：os.walk 中跳过 dirnames 可同时跳过子目录（性能优化）。
+        """
+        completed = completed_dirs or set()
+        for root in self.config.project_roots:
+            root_path = Path(root)
+            if not root_path.exists():
+                continue
+            yield from self._scan_dir(root_path, root, skip_dirs_extra=completed)
+
+    def scan_single_root(self, project_root: str,
+                          completed_dirs: set = None) -> Iterator[ScannedFile]:
+        """
+        断点续传式扫描单个项目根目录。
+        
+        与 scan_with_resume 的区别：只扫描指定的一个根目录，
+        不会误扫其他项目的文件。由 index_with_resume() 逐项目调用。
+        
+        Args:
+            project_root: 单个项目根目录路径
+            completed_dirs: 此项目已完成的目录集合
+        """
+        completed = completed_dirs or set()
+        root_path = Path(project_root)
+        if not root_path.exists():
+            return
+        yield from self._scan_dir(root_path, project_root, skip_dirs_extra=completed)
+
+    def _scan_dir(self, root_path: Path, project_root: str,
+                   skip_dirs_extra: set = None) -> Iterator[ScannedFile]:
+        """递归扫描单个目录
+        
+        Args:
+            skip_dirs_extra: 额外的目录路径集合（断点续传中已完成的目录）
+            skip_dirs_extra 中的目录会阻止 os.walk 进入 + 阻止产出文件
+        """
+        extra = skip_dirs_extra or set()
+
         for dirpath, dirnames, filenames in os.walk(root_path):
-            # 跳过黑名单目录
+            current_dir = str(Path(dirpath))
+
+            # === 跳过黑名单目录 + 已完成目录 ===
             dirnames_copy = dirnames[:]
             for d in dirnames_copy:
+                full_d = str(Path(dirpath) / d)
                 if d in self.config.skip_dirs:
                     dirnames.remove(d)
                 elif any(d.startswith(p.replace("*", "")) for p in self.config.skip_dirs if "*" in p):
                     dirnames.remove(d)
+                elif full_d in extra:
+                    # 已完成目录：阻止继续深入
+                    dirnames.remove(d)
 
-            current_dir = Path(dirpath)
+            # 如果当前目录本身在已完成集合中，跳过产出文件
+            if current_dir in extra:
+                continue
+
+            current_dir_path = Path(dirpath)
             for fname in filenames:
-                file_path = current_dir / fname
+                file_path = current_dir_path / fname
                 ext = file_path.suffix.lower()
 
                 if ext not in self.config.indexable_extensions:
@@ -168,7 +221,13 @@ class DScanner:
         return sf
 
     def chunk_file(self, sf: ScannedFile) -> list[Chunk]:
-        """将单个文件切分为多个 chunk"""
+        """将单个文件切分为多个 chunk
+
+        chunk_id 策略（空间去重）：
+        - 只用内容 hash + chunk 序号，去掉路径 hash
+        - 同内容不同路径 → 相同 chunk_id → upsert 时合并路径，而非重复存储
+        - 原始路径信息通过 metadata["source_paths"]（JSON 列表）保留
+        """
         if not sf.content:
             return []
 
@@ -189,7 +248,6 @@ class DScanner:
                 last_modified=sf.last_modified,
                 metadata={
                     "size": sf.size_bytes,
-                    "path": sf.file_path,
                     "project_root": sf.project_root,
                 },
             )
@@ -215,7 +273,6 @@ class DScanner:
                     last_modified=sf.last_modified,
                     metadata={
                         "size": sf.size_bytes,
-                        "path": sf.file_path,
                         "project_root": sf.project_root,
                     },
                 )
